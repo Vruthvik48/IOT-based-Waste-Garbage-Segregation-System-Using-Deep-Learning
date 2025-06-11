@@ -1,0 +1,97 @@
+import tensorflow as tf
+import cv2
+import numpy as np
+import RPi.GPIO as GPIO
+import time
+
+# Load trained model
+model = tf.keras.models.load_model("/home/pi/Desktop/waste seg/waste_classification_model.h5")
+
+# Define class labels (ensure they match the dataset classes used during training)
+class_names = ['metal', 'glass', 'plastic', 'normal_waste', 'glass']  # Update with actual class names
+
+# Define servo motor GPIO pins
+SERVO1_PIN = 18
+SERVO2_PIN = 23
+GPIO.setmode(GPIO.BOARD)
+GPIO.setup(SERVO1_PIN, GPIO.OUT)
+GPIO.setup(SERVO2_PIN, GPIO.OUT)
+
+servo1 = GPIO.PWM(SERVO1_PIN, 50)  # 50Hz PWM frequency
+servo2 = GPIO.PWM(SERVO2_PIN, 50)
+
+servo1.start(0)
+servo2.start(0)
+
+def set_servo_angle(servo, angle):
+    duty_cycle = (angle / 18) + 2  # Convert angle to duty cycle
+    servo.ChangeDutyCycle(duty_cycle)
+    time.sleep(0.5)
+    servo.ChangeDutyCycle(0)  # Stop sending signal
+
+def is_black(frame):
+    """Check if the majority of the image is black (low brightness)."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # Convert to grayscale
+    brightness = np.mean(gray)  # Get average brightness
+    return brightness < 50  # Threshold for black detection
+
+def predict_from_webcam():
+    cap = cv2.VideoCapture(0)
+    cap.set(3, 640)  # Set width
+    cap.set(4, 480)  # Set height
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Check if detected object is black
+        if is_black(frame):
+            cv2.putText(frame, "nothing", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            cv2.imshow('Waste Recognition', frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+            continue  # Skip processing and keep servos off
+        
+        # Preprocess frame
+        frame_resized = cv2.resize(frame, (224, 224))
+        frame_normalized = frame_resized / 255.0
+        frame_expanded = np.expand_dims(frame_normalized, axis=0)
+        
+        # Prediction
+        predictions = model.predict(frame_expanded)
+        predicted_class = np.argmax(predictions, axis=1)[0]
+        predicted_label = class_names[predicted_class]
+        
+        # Set servo angles based on classification
+        angles = {
+            'plastic': 45,
+            'glass': 110,
+            'normal_waste': 0,
+            #'glass': 150,
+            'metal': 150
+        }
+        
+        if predicted_label in angles:
+            set_servo_angle(servo1, angles[predicted_label])
+            time.sleep(0.5)  # Small delay before second servo operates
+            set_servo_angle(servo2, 78)  # Open second servo
+            time.sleep(0.5)
+            set_servo_angle(servo2, 23)  # Close second servo
+        
+        # Display prediction
+        cv2.putText(frame, predicted_label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.imshow('Waste Recognition', frame)
+        
+        # Exit on 'q'
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    
+    cap.release()
+    cv2.destroyAllWindows()
+    servo1.stop()
+    servo2.stop()
+    GPIO.cleanup()
+
+# Run webcam prediction
+predict_from_webcam()
